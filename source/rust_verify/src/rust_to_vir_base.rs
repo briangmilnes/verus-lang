@@ -21,6 +21,7 @@ use rustc_span::def_id::{DefId, LOCAL_CRATE};
 use rustc_span::symbol::{Ident, kw};
 use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_trait_selection::solve::BuiltinImplSource;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -146,6 +147,16 @@ pub(crate) fn def_id_to_friendly<'tcx>(
     }
 }
 
+thread_local! {
+    static DEF_ID_PATH_CACHE: RefCell<HashMap<DefId, Option<Path>>> = RefCell::new(HashMap::new());
+}
+
+/// Clear the DefId-to-Path cache. Call between crates if rust_verify is ever
+/// used for multiple crates in a single process.
+pub(crate) fn clear_def_id_path_cache() {
+    DEF_ID_PATH_CACHE.with(|c| c.borrow_mut().clear());
+}
+
 pub(crate) fn def_id_to_vir_path_option<'tcx>(
     tcx: TyCtxt<'tcx>,
     verus_items: Option<&crate::verus_items::VerusItems>,
@@ -161,10 +172,22 @@ pub(crate) fn def_id_to_vir_path_option<'tcx>(
             return Some(Arc::new(PathX { krate, segments: Arc::new(segments) }));
         }
     }
+
+    // Check cache — keyed by DefId (Copy, cheap to hash).
+    // Caches both Some and None results to avoid repeated lookups.
+    if let Some(cached) = DEF_ID_PATH_CACHE.with(|c| c.borrow().get(&def_id).cloned()) {
+        if let Some(path) = &cached {
+            register_friendly_path_as_rust_name(tcx, def_id, path);
+        }
+        return cached;
+    }
+
     let path = def_path_to_vir_path(tcx, tcx.def_path(def_id));
     if let Some(path) = &path {
         register_friendly_path_as_rust_name(tcx, def_id, path);
     }
+
+    DEF_ID_PATH_CACHE.with(|c| c.borrow_mut().insert(def_id, path.clone()));
     path
 }
 
